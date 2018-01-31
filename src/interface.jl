@@ -122,20 +122,20 @@ function setup!(model::OSQP.Model;
     # Convert lower and upper bounds from Julia infinity to OSQP infinity
     u = min.(u, OSQP_INFTY)
     l = max.(l, -OSQP_INFTY)
-    
+
     # Create managed matrices to avoid segfaults (See SCS.jl)
     managedP = OSQP.ManagedCcsc(P)
     managedA = OSQP.ManagedCcsc(A)
-    
+
     # Get managed pointers (Ref) Pdata and Adata
     Pdata = Ref(OSQP.Ccsc(managedP))
     Adata = Ref(OSQP.Ccsc(managedA))
 
     # Create OSQP data using the managed matrices pointers
-    data = OSQP.Data(n, m, 
+    data = OSQP.Data(n, m,
                      Base.unsafe_convert(Ptr{OSQP.Ccsc}, Pdata),
                      Base.unsafe_convert(Ptr{OSQP.Ccsc}, Adata),
-                     pointer(q), 
+                     pointer(q),
                      pointer(l), pointer(u))
 
     # Create OSQP settings
@@ -180,7 +180,7 @@ function solve!(model::OSQP.Model)
     data = unsafe_load(workspace.data)
 
     # Recover Cinfo structure
-        cinfo = unsafe_load(workspace.info)
+    cinfo = unsafe_load(workspace.info)
 
     # Construct C structure
     info = OSQP.Info(cinfo)
@@ -193,7 +193,7 @@ function solve!(model::OSQP.Model)
     x = Array{Float64}(uninitialized, data.n)
     y = Array{Float64}(uninitialized, data.m)
 
-        if info.status in SOLUTION_PRESENT 
+    if info.status in SOLUTION_PRESENT
         # If solution exists, copy it
         unsafe_copyto!(pointer(x), solution.x, data.n)
         unsafe_copyto!(pointer(y), solution.y, data.m)
@@ -205,17 +205,18 @@ function solve!(model::OSQP.Model)
         x *= NaN
         y *= NaN
         if info.status == :Primal_infeasible || info.status == :Primal_infeasible_inaccurate
-            prim_inf_cert = Array{Float64}(uninitialized, data.m) 
+            prim_inf_cert = Array{Float64}(uninitialized, data.m)
             unsafe_copyto!(pointer(prim_inf_cert), workspace.delta_y, data.m)
             # Return results
-                return Results(x, y, info, prim_inf_cert, nothing)  
+                return Results(x, y, info, prim_inf_cert, nothing)
         elseif info.status == :Dual_infeasible || info.status == :Dual_infeasible_inaccurate
-            dual_inf_cert = Array{Float64}(uninitialized, data.n) 
+            dual_inf_cert = Array{Float64}(uninitialized, data.n)
             unsafe_copyto!(pointer(dual_inf_cert), workspace.delta_x, data.n)
             # Return results
-                return Results(x, y, info, nothing, dual_inf_cert)  
+                return Results(x, y, info, nothing, dual_inf_cert)
         end
     end
+    error() # fixes #4
 end
 
 
@@ -523,7 +524,7 @@ end
 
 function linsys_solver_str_to_int!(settings_dict::Dict{Symbol, Any})
          # linsys_str = pop!(settings_dict, :linsys_solver)
-         linsys_str = get(settings_dict, :linsys_solver, nothing)   
+         linsys_str = get(settings_dict, :linsys_solver, nothing)
 
      if linsys_str != nothing
          # Check type
@@ -544,6 +545,6 @@ function linsys_solver_str_to_int!(settings_dict::Dict{Symbol, Any})
             warn("Linear system solver not recognized. Using default SuiteSparse LDL")
             settings_dict[:linsys_solver] = SUITESPARSE_LDL_SOLVER
 
-        end 
+        end
     end
 end

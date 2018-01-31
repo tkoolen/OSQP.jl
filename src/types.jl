@@ -3,9 +3,9 @@
 
 # Integer type from C
 if Sys.WORD_SIZE == 64   # 64bit system
-    Cc_int = Clonglong
+    const Cc_int = Clonglong
 else  # 32bit system
-    Cc_int = Cint
+    const Cc_int = Cint
 end
 
 struct Ccsc
@@ -43,7 +43,7 @@ function ManagedCcsc(M::SparseMatrixCSC)
     i = convert(Array{Cc_int, 1}, M.rowval .- 1)
     # C is 0 indexed
     p = convert(Array{Cc_int, 1}, M.colptr .- 1)
-    
+
     # Create new ManagedCcsc matrix
     ManagedCcsc(length(M.nzval), m, n, p, i, x, -1)
 end
@@ -133,7 +133,7 @@ function Settings(settings_dict::Dict{Symbol, Any})
        linsys_solver_str_to_int!(settings_dict)
 
     # Get list with elements of default and user settings
-    # If setting is in the passed settings (settings_dict), 
+    # If setting is in the passed settings (settings_dict),
     # then convert type to the right type. Otherwise just take
     # the default one
     settings_list = [setting in keys(settings_dict) ?
@@ -239,7 +239,7 @@ struct Results
     dual_inf_cert::Union{Vector{Float64}, Nothing}
 
 end
-Results(x, y, info) = Results(x, y, info, nothing, nothing) 
+Results(x, y, info) = Results(x, y, info, nothing, nothing)
 
 
 
