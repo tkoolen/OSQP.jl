@@ -11,7 +11,7 @@ const MOIU = MathOptInterfaceUtilities
 const CI = MOI.ConstraintIndex
 const VI = MOI.VariableIndex
 
-const SparseTriplets = Tuple{Vector{<:Integer}, Vector{<:Integer}, Vector{<:Any}}
+const SparseTriplets = Tuple{Vector{Int}, Vector{Int}, Vector{<:Any}}
 
 const SingleVariable = MOI.SingleVariable
 const Affine = MOI.ScalarAffineFunction{Float64}
@@ -31,6 +31,47 @@ constant(f::SingleVariable) = 0
 constant(f::Affine) = f.constant
 constant(f::Quadratic) = f.constant
 
+struct SparsityPattern
+    cartesian_to_nzval_index::Dict{CartesianIndex{2}, Int}
+
+    SparsityPattern() = new()
+    function SparsityPattern(S::SparseMatrixCSC)
+        cartesian_to_nzval_index = Dict{CartesianIndex{2}, Int}()
+        sizehint!(cartesian_to_nzval_index, nnz(S))
+        @inbounds for col = 1 : S.n, k = S.colptr[col] : (S.colptr[col+1]-1) # from findn
+            row = S.rowval[k]
+            cartesian_to_nzval_index[CartesianIndex(row, col)] = k
+        end
+        new(cartesian_to_nzval_index)
+    end
+end
+Base.getindex(pattern::SparsityPattern, I::CartesianIndex{2}) = pattern.cartesian_to_nzval_index[I]
+Base.length(pattern::SparsityPattern) = length(pattern.cartesian_to_nzval_index)
+
+mutable struct CacheElement{T}
+    data::T
+    dirty::Bool
+    CacheElement(data::T) where {T} = new{T}(data, false)
+end
+
+struct ProblemModificationCache{T}
+    qcache::CacheElement{Vector{T}}
+    lcache::CacheElement{Vector{T}}
+    ucache::CacheElement{Vector{T}}
+    Pmodifications::SparseVector{T, Int}
+    Amodifications::SparseVector{T, Int}
+
+    ProblemModificationCache{T}() where {T} = new{T}()
+    function ProblemModificationCache(q::Vector{T}, l::Vector{T}, u::Vector{T}, Ppattern::SparsityPattern, Apattern::SparsityPattern) where T
+        qcache = CacheElement(copy(q))
+        lcache = CacheElement(copy(l))
+        ucache = CacheElement(copy(u))
+        Pmodifications = spzeros(length(Ppattern))
+        Amodifications = spzeros(length(Apattern))
+        new{T}(qcache, lcache, ucache, Pmodifications, Amodifications)
+    end
+end
+
 mutable struct OSQPOptimizer <: MOI.AbstractOptimizer # TODO: name?
     inner::OSQP.Model
     results::Union{OSQP.Results, Nothing}
@@ -38,8 +79,13 @@ mutable struct OSQPOptimizer <: MOI.AbstractOptimizer # TODO: name?
     settings::Dict{Symbol, Any} # need to store these, because they should be preserved if empty! is called
     sense::MOI.OptimizationSense
     objconstant::Float64
+    Ppattern::SparsityPattern
+    Apattern::SparsityPattern
+    modificationcache::ProblemModificationCache{Float64}
 
-    OSQPOptimizer() = new(OSQP.Model(), nothing, true, Dict{Symbol, Any}(), MOI.MinSense, 0.)
+    function OSQPOptimizer()
+        new(OSQP.Model(), nothing, true, Dict{Symbol, Any}(), MOI.MinSense, 0., SparsityPattern(), SparsityPattern(), ProblemModificationCache{Float64}())
+    end
 end
 
 hasresults(optimizer::OSQPOptimizer) = optimizer.results != nothing
@@ -50,6 +96,9 @@ function MOI.empty!(optimizer::OSQPOptimizer)
     optimizer.isempty = true
     optimizer.sense = MOI.MinSense # model parameter, so needs to be reset
     optimizer.objconstant = 0.
+    optimizer.Ppattern = SparsityPattern()
+    optimizer.Apattern = SparsityPattern()
+    optimizer.modificationcache = ProblemModificationCache{Float64}()
     optimizer
 end
 
@@ -64,7 +113,10 @@ function MOI.copy!(dest::OSQPOptimizer, src::MOI.ModelLike)
         MOI.supportsconstraint(dest, F, S) || return MOI.CopyResult(MOI.CopyUnsupportedConstraint, "Unsupported $F-in-$S constraint", idxmap)
     end
     dest.sense, P, q, dest.objconstant = processobjective(src, idxmap)
+    dest.Ppattern = SparsityPattern(P)
     A, l, u = processconstraints(src, idxmap)
+    dest.Apattern = SparsityPattern(A)
+    dest.modificationcache = ProblemModificationCache(q, l, u, dest.Ppattern, dest.Apattern)
     OSQP.setup!(dest.inner; P = P, q = q, A = A, l = l, u = u, dest.settings...)
     processwarmstart!(dest, src, idxmap)
 
@@ -117,7 +169,7 @@ function processobjective(src::MOI.ModelLike, idxmap)
             I = [idxmap[var].value for var in fquadratic.quadratic_rowvariables]
             J = [idxmap[var].value for var in fquadratic.quadratic_colvariables]
             V = fquadratic.quadratic_coefficients
-            symmetrize!((I, J, V))
+            symmetrize!(I, J, V)
             P = sparse(I, J, V, n, n)
             q = processlinearterm(fquadratic.affine_variables, fquadratic.affine_coefficients, idxmap)
             c = fquadratic.constant
@@ -143,8 +195,7 @@ function processlinearterm(variables::Vector{VI}, coefficients::Vector, idxmap)
     q
 end
 
-function symmetrize!(triplets::SparseTriplets)
-    I, J, V = triplets
+function symmetrize!(I::Vector{Int}, J::Vector{Int}, V::Vector)
     n = length(V)
     @assert length(I) == length(J) == n
     for i = 1 : n
